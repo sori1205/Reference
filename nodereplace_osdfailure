@@ -1,0 +1,1026 @@
+[ACTION PLAN]
+https://gss--c.vf.force.com/apex/Case_View?id=500Hn00001pE0Wf&sfdc.override=1
+
+1.  Scale down operators
+
+  # oc scale deployment rook-ceph-operator --replicas=0
+  deployment.apps/rook-ceph-operator scaled
+  # oc scale deployment ocs-operator --replicas=0
+  deployment.apps/ocs-operator scaled
+  
+  Set osd_id_to_remove variable with OSD id number, OSD 1 in example below:
+  
+  #>osd_id_to_remove=2
+  #>oc scale -n openshift-storage deployment rook-ceph-osd-${osd_id_to_remove} --replicas=0
+  deployment.apps/rook-ceph-osd-2 scaled
+
+  Verify that the rook-ceph-osd pod is terminated. 
+
+  #>oc get -n openshift-storage pods -l ceph-osd-id=${osd_id_to_remove}
+  No resources found in openshift-storage namespace.
+
+2 .Remove old removal jobs
+
+  Sometimes a pending removal job is stuck, that cleans the namespace from old jobs
+
+  #> oc delete jobs --all -n openshift-storage
+
+3. Create new removal job for OSD2, this will take some minutes
+
+  #>oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=${osd_id_to_remove} FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+
+  Verify that the job is completed 
+
+  #>oc get pod -l job-name=ocs-osd-removal-job -n openshift-storage
+  STATUS = Completed
+
+  #>oc logs -l job-name=ocs-osd-removal-job -n openshift-storage --tail=-1 | egrep -i 'completed removal'
+  2024-10-26 08:33:27.661822 I | cephosd: completed removal of OSD 2
+
+  Get PVC from the logs:
+  #>oc logs -l job-name=ocs-osd-removal-job -n openshift-storage --tail=-1  |egrep -i 'pvc|deviceset'
+  2024-10-26 08:33:25.902141 I | cephosd: removing the OSD PVC "ocs-deviceset-xxxxxx"
+
+  At this point the OSD and PVC must to be removed by the job, we can delete the headers from the device
+
+4. Debug a session to the node where OSD2 is trying to start
+
+    #> lsblk
+
+    Identify the size of the disk matching with the OSD size example sdX and remove old headers (Be careful with the device, will destroy the data on it)
+
+      sh#> sgdisk --zap-all /dev/sdX   
+      sh#> wipefs -fa /dev/sdX
+
+5. Scale up operators
+
+  # oc scale deployment rook-ceph-operator --replicas=1
+  deployment.apps/rook-ceph-operator scaled
+  # oc scale deployment ocs-operator --replicas=1
+  deployment.apps/ocs-operator scaled
+
+6. Check if the new OSD is running
+
+  It can take some minutes, you can check if new prepare job and pod started and are progressing
+
+
+
+
+rook-ceph-osd-11-645fcdd6b-lwqz7                                  0/2     Init:0/4                0                   2m32s   <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-13-56ccddd4dc-jx7h2                                 0/2     Init:0/4                0                   18m     <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-7-564759ffdc-9d2nq     
+
+// Action Taken
+
+oc scale -n openshift-storage deployment rook-ceph-osd-1 --replicas=0
+oc scale -n openshift-storage deployment rook-ceph-osd-11 --replicas=0
+oc scale -n openshift-storage deployment rook-ceph-osd-13 --replicas=0
+oc scale -n openshift-storage deployment rook-ceph-osd-17 --replicas=0
+oc scale -n openshift-storage deployment rook-ceph-osd-18 --replicas=0
+oc scale -n openshift-storage deployment rook-ceph-osd-19 --replicas=0
+oc scale -n openshift-storage deployment rook-ceph-osd-4 --replicas=0
+oc scale -n openshift-storage deployment rook-ceph-osd-7 --replicas=0
+
+// osds are teraminating and removed 
+[root@bastion ~]# oc get pods -n openshift-storage -o wide |grep -i worker02
+csi-cephfsplugin-bbctb                                            2/2     Running                 4                 16d    10.184.134.80   worker02.ocp4.example.com   <none>           <none>
+csi-rbdplugin-nc6g7                                               3/3     Running                 6                 16d    10.184.134.80   worker02.ocp4.example.com   <none>           <none>
+rook-ceph-crashcollector-worker02.ocp4.example.com-84c858b48q44   1/1     Running                 2                 22h    10.131.1.247    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-exporter-worker02.ocp4.example.com-8487b6cbf-cr82t      1/1     Running                 2                 22h    10.131.1.246    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-mon-a-668494f5f5-fc9pd                                  2/2     Running                 4                 22h    10.131.1.244    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-11-645fcdd6b-6d28s                                  0/2     Terminating             0                 21h    <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-13-56ccddd4dc-dfcbk                                 0/2     Terminating             0                 21h    <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1-8l54f      0/1     Init:0/2                0                 21h    <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-59b8a6913992c14d4847b06292210387-mftmm      0/1     Completed               0                 21h    <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-63e113d7c295af44fcca5a0e727091d8-75tpl      0/1     Completed               0                 21h    <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010-vrrwm      0/1     Init:0/2                0                 21h    <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-a5e77c7ad2b9e1259ebf2f6d29857510-4z2fs      0/1     Completed               0                 21h    <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea-dfnx5      0/1     Init:0/2                0                 21h    <none>          worker02.ocp4.example.com   <none>           <none>
+
+[root@bastion ~]# oc get jobs -n openshift-storage
+NAME                                                     COMPLETIONS   DURATION   AGE
+rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1   0/1           21h        21h
+rook-ceph-osd-prepare-0ce3c020d8a81a4e2dfc5ab6d9528976   1/1           82s        165d
+rook-ceph-osd-prepare-0d62873314e0e791b065ff334ac54249   1/1           10s        266d
+rook-ceph-osd-prepare-1358d7dbd958308e7db076ea07f8494e   0/1           165d       165d
+rook-ceph-osd-prepare-176ec7a1a353173eb5896114fbae3032   1/1           12s        21h
+rook-ceph-osd-prepare-1c209823cabe61c1a45f3ec5c4af2ae0   1/1           11s        266d
+rook-ceph-osd-prepare-2445c1bf2316f63f106f135235a0c40e   0/1           21h        21h
+rook-ceph-osd-prepare-25fc66fe9f374360826b97a62d5f704f   0/1           21h        21h
+rook-ceph-osd-prepare-29970d008bb8b5b395903b5f4b3f2df2   1/1           12s        266d
+rook-ceph-osd-prepare-2ab588ddf48ba42e7d9edda66eabc0d7   1/1           12s        266d
+rook-ceph-osd-prepare-2d83bb6558b77d91f1855cd9418ec1ba   0/1           21h        21h
+rook-ceph-osd-prepare-2ef304a1f55e71aca72f83a2c07dcbaa   1/1           10s        266d
+rook-ceph-osd-prepare-3032660e0e085b34e6878e5c0b46b4c5   1/1           38s        142d
+rook-ceph-osd-prepare-3dd96118c9c7edefcbd9006513f510b7   1/1           73s        134d
+rook-ceph-osd-prepare-486378daa1b35c4bb7dbdf778a1cc220   1/1           49s        134d
+rook-ceph-osd-prepare-53d52e78f7cd81130ff805b5bc1b9756   1/1           12s        134d
+rook-ceph-osd-prepare-59b8a6913992c14d4847b06292210387   1/1           10s        21h
+rook-ceph-osd-prepare-5cd8f34be07fd2e1623bde6a85cf76e8   0/1           21h        21h
+rook-ceph-osd-prepare-63e113d7c295af44fcca5a0e727091d8   1/1           10s        21h
+rook-ceph-osd-prepare-6a82453cdae082029583cda296207dfd   1/1           84s        165d
+rook-ceph-osd-prepare-73db1eb76554f218bc53b9a8a9743de3   0/1           21h        21h
+rook-ceph-osd-prepare-836df9e3132491ef52976cba300f4c74   1/1           11s        266d
+rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010   0/1           21h        21h
+rook-ceph-osd-prepare-a05ac88a71acab7afb4139f8b9125371   1/1           6s         21h
+rook-ceph-osd-prepare-a075b0cd9c167c519d15a410d39c102b   1/1           82s        165d
+rook-ceph-osd-prepare-a0e5e4a70afb1012a4ecfec4d8b4453a   1/1           12s        165d
+rook-ceph-osd-prepare-a26c5be65e8938645b442f979b818a26   1/1           12s        142d
+rook-ceph-osd-prepare-a5e77c7ad2b9e1259ebf2f6d29857510   1/1           12s        21h
+rook-ceph-osd-prepare-ae48a20bb8033071efdf8b0fbb37c9cc   1/1           10m        134d
+rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea   0/1           21h        21h
+rook-ceph-osd-prepare-bbf4d7918a8b57b38d685ea6de98a17e   0/1           21h        21h
+rook-ceph-osd-prepare-c1f7a2194a7898f79b9262d65e53b59c   0/1           21h        21h
+rook-ceph-osd-prepare-e55e6d3d9b98e41fd736d362841e7a40   1/1           7s         21h
+rook-ceph-osd-prepare-e8f55be4ab85df1623d9a42c4061b870   0/1           21h        21h
+rook-ceph-osd-prepare-f59801e5a6a9b8fd7e1f7d379e60159e   1/1           7s         21h
+
+[root@bastion ~]#  oc delete jobs --all -n openshift-storage
+job.batch "rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1" deleted
+job.batch "rook-ceph-osd-prepare-0ce3c020d8a81a4e2dfc5ab6d9528976" deleted
+job.batch "rook-ceph-osd-prepare-0d62873314e0e791b065ff334ac54249" deleted
+job.batch "rook-ceph-osd-prepare-1358d7dbd958308e7db076ea07f8494e" deleted
+job.batch "rook-ceph-osd-prepare-176ec7a1a353173eb5896114fbae3032" deleted
+job.batch "rook-ceph-osd-prepare-1c209823cabe61c1a45f3ec5c4af2ae0" deleted
+job.batch "rook-ceph-osd-prepare-2445c1bf2316f63f106f135235a0c40e" deleted
+job.batch "rook-ceph-osd-prepare-25fc66fe9f374360826b97a62d5f704f" deleted
+job.batch "rook-ceph-osd-prepare-29970d008bb8b5b395903b5f4b3f2df2" deleted
+job.batch "rook-ceph-osd-prepare-2ab588ddf48ba42e7d9edda66eabc0d7" deleted
+job.batch "rook-ceph-osd-prepare-2d83bb6558b77d91f1855cd9418ec1ba" deleted
+job.batch "rook-ceph-osd-prepare-2ef304a1f55e71aca72f83a2c07dcbaa" deleted
+job.batch "rook-ceph-osd-prepare-3032660e0e085b34e6878e5c0b46b4c5" deleted
+job.batch "rook-ceph-osd-prepare-3dd96118c9c7edefcbd9006513f510b7" deleted
+job.batch "rook-ceph-osd-prepare-486378daa1b35c4bb7dbdf778a1cc220" deleted
+job.batch "rook-ceph-osd-prepare-53d52e78f7cd81130ff805b5bc1b9756" deleted
+job.batch "rook-ceph-osd-prepare-59b8a6913992c14d4847b06292210387" deleted
+job.batch "rook-ceph-osd-prepare-5cd8f34be07fd2e1623bde6a85cf76e8" deleted
+job.batch "rook-ceph-osd-prepare-63e113d7c295af44fcca5a0e727091d8" deleted
+job.batch "rook-ceph-osd-prepare-6a82453cdae082029583cda296207dfd" deleted
+job.batch "rook-ceph-osd-prepare-73db1eb76554f218bc53b9a8a9743de3" deleted
+job.batch "rook-ceph-osd-prepare-836df9e3132491ef52976cba300f4c74" deleted
+job.batch "rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010" deleted
+job.batch "rook-ceph-osd-prepare-a05ac88a71acab7afb4139f8b9125371" deleted
+job.batch "rook-ceph-osd-prepare-a075b0cd9c167c519d15a410d39c102b" deleted
+job.batch "rook-ceph-osd-prepare-a0e5e4a70afb1012a4ecfec4d8b4453a" deleted
+job.batch "rook-ceph-osd-prepare-a26c5be65e8938645b442f979b818a26" deleted
+job.batch "rook-ceph-osd-prepare-a5e77c7ad2b9e1259ebf2f6d29857510" deleted
+job.batch "rook-ceph-osd-prepare-ae48a20bb8033071efdf8b0fbb37c9cc" deleted
+job.batch "rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea" deleted
+job.batch "rook-ceph-osd-prepare-bbf4d7918a8b57b38d685ea6de98a17e" deleted
+job.batch "rook-ceph-osd-prepare-c1f7a2194a7898f79b9262d65e53b59c" deleted
+job.batch "rook-ceph-osd-prepare-e55e6d3d9b98e41fd736d362841e7a40" deleted
+job.batch "rook-ceph-osd-prepare-e8f55be4ab85df1623d9a42c4061b870" deleted
+job.batch "rook-ceph-osd-prepare-f59801e5a6a9b8fd7e1f7d379e60159e" deleted
+
+OSDs 
+
+1
+11
+13
+17
+18
+19
+4
+7
+
+oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=1 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=11 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=13 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=17 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=18 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=19 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=4 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=7 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+
+
+[root@bastion ~]# oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=1 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+job.batch/ocs-osd-removal-job created
+[root@bastion ~]# oc get jobs -n openshift-storage
+NAME                  COMPLETIONS   DURATION   AGE
+ocs-osd-removal-job   0/1           11s        11s
+
+
+[root@bastion ~]# oc get pod -l job-name=ocs-osd-removal-job -n openshift-storage
+NAME                        READY   STATUS   RESTARTS   AGE
+ocs-osd-removal-job-tqbsk   0/1     Error    0          52s
+ocs-osd-removal-job-vtnhk   0/1     Error    0          19s
+ocs-osd-removal-job-xrgb7   0/1     Error    0          40s
+
+
+
+[root@bastion ~]# oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=17 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+job.batch/ocs-osd-removal-job created
+[root@bastion ~]# oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=18 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+Error from server (AlreadyExists): error when creating "STDIN": jobs.batch "ocs-osd-removal-job" already exists
+[root@bastion ~]# oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=19 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+Error from server (AlreadyExists): error when creating "STDIN": jobs.batch "ocs-osd-removal-job" already exists
+
+
+[root@bastion ~]#  oc delete job ocs-osd-removal-job -n openshift-storage
+[root@bastion ~]# oc process -n openshift-storage ocs-osd-removal -p FAILED_OSD_IDS=11 FORCE_OSD_REMOVAL=true | oc create -n openshift-storage -f -
+oc get pod -l job-name=ocs-osd-removal-job -n openshift-storage
+
+
+
+[root@bastion ~]# oc get pvc -n openshift-storage
+NAME                                   STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS                  AGE
+db-noobaa-db-pg-0                      Bound    pvc-d97c01f4-4bf5-4b62-a0fd-d7f9d2bb9678   50Gi       RWO            ocs-storagecluster-ceph-rbd   266d
+ocs-deviceset-odflvsc-0-data-0sn9ff    Bound    local-pv-6393368d                          20Gi       RWO            odflvsc                       266d
+ocs-deviceset-odflvsc-0-data-1042x52   Bound    local-pv-8d47a947                          20Gi       RWO            odflvsc                       165d
+ocs-deviceset-odflvsc-0-data-119fqxf   Bound    local-pv-bf953f40                          20Gi       RWO            odflvsc                       165d
+ocs-deviceset-odflvsc-0-data-126vjg6   Bound    local-pv-86722c8e                          20Gi       RWO            odflvsc                       165d
+ocs-deviceset-odflvsc-0-data-13md2gw   Bound    local-pv-be3dad44                          20Gi       RWO            odflvsc                       165d
+ocs-deviceset-odflvsc-0-data-14fkdqn   Bound    local-pv-9cff2c33                          20Gi       RWO            odflvsc                       165d
+ocs-deviceset-odflvsc-0-data-15dkrth   Bound    local-pv-bed0505b                          20Gi       RWO            odflvsc                       165d
+ocs-deviceset-odflvsc-0-data-169fq97   Bound    local-pv-defad918                          20Gi       RWO            odflvsc                       143d
+ocs-deviceset-odflvsc-0-data-17frprv   Bound    local-pv-4eb49abb                          20Gi       RWO            odflvsc                       143d
+ocs-deviceset-odflvsc-0-data-18ddssr   Bound    local-pv-2a46b122                          20Gi       RWO            odflvsc                       135d
+ocs-deviceset-odflvsc-0-data-18sxzr    Bound    local-pv-43d637ce                          20Gi       RWO            odflvsc                       266d
+ocs-deviceset-odflvsc-0-data-19xssv2   Bound    local-pv-2fef99a6                          20Gi       RWO            odflvsc                       134d
+ocs-deviceset-odflvsc-0-data-20928j7   Bound    local-pv-768154e2                          20Gi       RWO            odflvsc                       134d
+ocs-deviceset-odflvsc-0-data-21nrndc   Bound    local-pv-5e3ce3d8                          20Gi       RWO            odflvsc                       134d
+ocs-deviceset-odflvsc-0-data-2297q88   Bound    local-pv-f152ce16                          10Gi       RWO            odflvsc                       22h
+ocs-deviceset-odflvsc-0-data-23gbvqg   Bound    local-pv-108dc58b                          20Gi       RWO            odflvsc                       22h
+ocs-deviceset-odflvsc-0-data-27nfbc4   Bound    local-pv-8c0c6b60                          30Gi       RWO            odflvsc                       22h
+ocs-deviceset-odflvsc-0-data-2n8nhf    Bound    local-pv-cf16150b                          20Gi       RWO            odflvsc                       266d
+ocs-deviceset-odflvsc-0-data-3wt4xb    Bound    local-pv-a1b874ae                          20Gi       RWO            odflvsc                       266d
+ocs-deviceset-odflvsc-0-data-4pd82h    Bound    local-pv-f7f95d6d                          20Gi       RWO            odflvsc                       266d
+ocs-deviceset-odflvsc-0-data-5cpx7b    Bound    local-pv-add4e34                           20Gi       RWO            odflvsc                       266d
+ocs-deviceset-odflvsc-0-data-6cv2r2    Bound    local-pv-d29e232e                          5Gi        RWO            odflvsc                       165d
+ocs-deviceset-odflvsc-0-data-7xx6f9    Bound    local-pv-456b5c30                          20Gi       RWO            odflvsc                       165d
+ocs-deviceset-odflvsc-0-data-8vzjk8    Bound    local-pv-a19b0918                          20Gi       RWO            odflvsc                       165d
+ocs-deviceset-odflvsc-0-data-9n88s2    Bound    local-pv-ce2b08a5                          20Gi       RWO            odflvsc                       165d
+[root@bastion ~]# oc get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM                                                    STORAGECLASS                  REASON   AGE
+image-registry                             100Gi      RWX            Retain           Bound       openshift-image-registry/image-registry-storage                                                 309d
+local-pv-10746268                          20Gi       RWO            Delete           Available                                                            odflvsc                                42m
+local-pv-108dc58b                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-23gbvqg   odflvsc                                78d
+local-pv-2a46b122                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-18ddssr   odflvsc                                135d
+local-pv-2fef99a6                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-19xssv2   odflvsc                                134d
+local-pv-43d637ce                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-18sxzr    odflvsc                                266d
+local-pv-456b5c30                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-7xx6f9    odflvsc                                165d
+local-pv-4eb49abb                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-17frprv   odflvsc                                143d
+local-pv-5e3ce3d8                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-21nrndc   odflvsc                                134d
+local-pv-6393368d                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-0sn9ff    odflvsc                                266d
+local-pv-768154e2                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-20928j7   odflvsc                                134d
+local-pv-86722c8e                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-126vjg6   odflvsc                                265d
+local-pv-8c0c6b60                          30Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-27nfbc4   odflvsc                                18d
+local-pv-8d47a947                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-1042x52   odflvsc                                262d
+local-pv-9cff2c33                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-14fkdqn   odflvsc                                262d
+local-pv-a0fad54f                          20Gi       RWO            Delete           Available                                                            odflvsc                                40m
+local-pv-a19b0918                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-8vzjk8    odflvsc                                165d
+local-pv-a1b874ae                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-3wt4xb    odflvsc                                266d
+local-pv-add4e34                           20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-5cpx7b    odflvsc                                266d
+local-pv-be3dad44                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-13md2gw   odflvsc                                263d
+local-pv-bed0505b                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-15dkrth   odflvsc                                265d
+local-pv-bf953f40                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-119fqxf   odflvsc                                238d
+local-pv-ce2b08a5                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-9n88s2    odflvsc                                165d
+local-pv-cf16150b                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-2n8nhf    odflvsc                                266d
+local-pv-d29e232e                          5Gi        RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-6cv2r2    odflvsc                                228d
+local-pv-defad918                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-169fq97   odflvsc                                143d
+local-pv-e8ce51f2                          20Gi       RWO            Delete           Available                                                            odflvsc                                40m
+local-pv-f152ce16                          10Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-2297q88   odflvsc                                99d
+local-pv-f7f95d6d                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-4pd82h    odflvsc                                266d
+pvc-135a0980-13f5-422c-9f3a-b3e88ef71fc8   100Gi      RWO            Delete           Bound       rhacs-operator/central-db                                ocs-storagecluster-ceph-rbd            260d
+pvc-1ada0567-dec1-4f48-8812-22a51a5c6fd8   50Gi       RWO            Delete           Bound       quay-enterprise/example-registry-quay-postgres-13        ocs-storagecluster-ceph-rbd            165d
+pvc-5958061e-8f68-467b-b415-398138c3c68e   50Gi       RWO            Delete           Bound       quay-enterprise/example-registry-clair-postgres-13       ocs-storagecluster-ceph-rbd            165d
+pvc-9d56daac-f05a-4c70-965b-d3ed0d218d61   100Gi      RWX            Delete           Bound       openshift-image-registry/registry-storage-pvc            ocs-storagecluster-cephfs              238d
+pvc-9fa0a0d2-9976-47c6-9277-01e2dd05cedc   20Gi       RWX            Delete           Bound       test1/cephfs-pvc                                         ocs-storagecluster-cephfs              143d
+pvc-b2f10ed4-c1bf-409f-b0d2-1f6cd816221c   1Gi        RWO            Delete           Bound       test-oadp/test-pvc                                       ocs-storagecluster-ceph-rbd            63d
+pvc-d3e05709-4ad7-4bba-af1d-e276f453b8e2   20Gi       RWO            Delete           Bound       test1/rbd-pvc                                            ocs-storagecluster-ceph-rbd            142d
+pvc-d97c01f4-4bf5-4b62-a0fd-d7f9d2bb9678   50Gi       RWO            Delete           Bound       openshift-storage/db-noobaa-db-pg-0                      ocs-storagecluster-ceph-rbd            266d
+pvc-e7e6f9d2-7c9f-4b10-ba06-5e63f37b9b88   100Gi      RWO            Delete           Bound       stackrox/central-db                                      ocs-storagecluster-ceph-rbd
+
+
+
+pv 리스트에서 worker02 노드의 sdb,sdc,sdd,sde,sdf를 사용하는 대상을 확인하는 스크립트
+
+[root@bastion SR]# for pv in local-pv-10746268 local-pv-108dc58b local-pv-2a46b122 local-pv-2fef99a6 \
+          local-pv-43d637ce local-pv-456b5c30 local-pv-4eb49abb local-pv-5e3ce3d8 \
+          local-pv-6393368d local-pv-768154e2 local-pv-86722c8e local-pv-8c0c6b60 \
+          local-pv-8d47a947 local-pv-9cff2c33 local-pv-a0fad54f local-pv-a19b0918 \
+          local-pv-a1b874ae local-pv-add4e34 local-pv-be3dad44 local-pv-bed0505b \
+          local-pv-bf953f40 local-pv-ce2b08a5 local-pv-cf16150b local-pv-d29e232e \
+          local-pv-defad918 local-pv-e8ce51f2 local-pv-f152ce16 local-pv-f7f95d6d
+do
+  echo "🔍 $pv"
+  oc get pv $pv -o jsonpath='{.metadata.name}{"\t"}{.spec.local.path}{"\t"}{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' ; echo
+done
+
+
+[root@bastion SR]# for pv in local-pv-10746268 local-pv-108dc58b local-pv-2a46b122 local-pv-2fef99a6           local-pv-43d637ce local-pv-456b5c30 local-pv-4eb49abb local-pv-5e3ce3d8           local-pv-6393368d local-pv-768154e2 local-pv-86722c8e local-pv-8c0c6b60           local-pv-8d47a947 local-pv-9cff2c33 local-pv-a0fad54f local-pv-a19b0918           local-pv-a1b874ae local-pv-add4e34 local-pv-be3dad44 local-pv-bed0505b           local-pv-bf953f40 local-pv-ce2b08a5 local-pv-cf16150b local-pv-d29e232e           local-pv-defad918 local-pv-e8ce51f2 local-pv-f152ce16 local-pv-f7f95d6d; do   echo "🔍 $pv";   oc get pv $pv -o jsonpath='{.metadata.name}{"\t"}{.spec.local.path}{"\t"}{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' ; echo; done |grep worker02
+local-pv-10746268	/mnt/local-storage/odflvsc/sdd	worker02.ocp4.example.com
+local-pv-108dc58b	/mnt/local-storage/odflvsc/wwn-0x6000c29c7967a89c7b773dec358afcfd	worker02.ocp4.example.com
+local-pv-2fef99a6	/mnt/local-storage/odflvsc/wwn-0x6000c29cea473eddde3adb41874e634c	worker02.ocp4.example.com
+local-pv-43d637ce	/mnt/local-storage/odflvsc/sdb	worker02.ocp4.example.com
+local-pv-456b5c30	/mnt/local-storage/odflvsc/wwn-0x6000c29d4766d995fb1d37ad1a5c996b	worker02.ocp4.example.com
+local-pv-8c0c6b60	/mnt/local-storage/odflvsc/wwn-0x6000c294516efa6ba98557ad780437a8	worker02.ocp4.example.com
+local-pv-8d47a947	/mnt/local-storage/odflvsc/wwn-0x6000c29f6d24cebcf8a9a34d11525112	worker02.ocp4.example.com
+local-pv-a0fad54f	/mnt/local-storage/odflvsc/sde	worker02.ocp4.example.com
+local-pv-defad918	/mnt/local-storage/odflvsc/wwn-0x6000c2994bc18d82a463afd1396c9f01	worker02.ocp4.example.com
+local-pv-e8ce51f2	/mnt/local-storage/odflvsc/sdf	worker02.ocp4.example.com
+local-pv-f7f95d6d	/mnt/local-storage/odflvsc/sdc	worker02.ocp4.example.com
+
+
+worker02.ocp4.example.com 노드에 위치한 PV들 중 아래와 같은 디바이스에 매핑된 것들이 있습니다:
+
+디바이스	매핑된 PV
+sdb	local-pv-43d637ce
+sdc	local-pv-f7f95d6d
+sdd	local-pv-10746268
+sde	local-pv-a0fad54f
+sdf	local-pv-e8ce51f2
+
+
+
+[root@bastion SR]# oc get pv |grep -ie local-pv-43d637ce -ie local-pv-f7f95d6d -ie local-pv-10746268 -ie local-pv-a0fad54f -ie local-pv-e8ce51f2
+local-pv-10746268                          20Gi       RWO            Delete           Available                                                            odflvsc                                54m
+local-pv-43d637ce                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-18sxzr    odflvsc                                266d
+local-pv-a0fad54f                          20Gi       RWO            Delete           Available                                                            odflvsc                                52m
+local-pv-e8ce51f2                          20Gi       RWO            Delete           Available                                                            odflvsc                                52m
+local-pv-f7f95d6d                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-4pd82h    odflvsc                                266d
+
+
+[root@bastion SR]# oc delete pvc/ocs-deviceset-odflvsc-0-data-18sxzr -n openshift-storage
+persistentvolumeclaim "ocs-deviceset-odflvsc-0-data-18sxzr" deleted
+[root@bastion SR]# oc delete pvc/ocs-deviceset-odflvsc-0-data-4pd82h -n openshift-storage
+persistentvolumeclaim "ocs-deviceset-odflvsc-0-data-4pd82h" deleted
+
+
+
+[root@bastion SR]# oc get pv |grep -i available
+local-pv-10746268                          20Gi       RWO            Delete           Available                                                            odflvsc                                58m
+local-pv-43d637ce                          20Gi       RWO            Delete           Available                                                            odflvsc                                52s
+local-pv-a0fad54f                          20Gi       RWO            Delete           Available                                                            odflvsc                                57m
+local-pv-e8ce51f2                          20Gi       RWO            Delete           Available                                                            odflvsc                                56m
+local-pv-f7f95d6d                          20Gi       RWO            Delete           Available                                                            odflvsc                                52s
+[root@bastion SR]# 
+
+
+
+[root@worker02 ~]# lsblk |grep sd
+sda      8:0    0   120G  0 disk 
+├─sda1   8:1    0     1M  0 part 
+├─sda2   8:2    0   127M  0 part 
+├─sda3   8:3    0   384M  0 part /boot
+└─sda4   8:4    0 119.5G  0 part /var/lib/kubelet/pods/80e5b8b4-5552-4878-8312-125ba68efbef/volume-subpaths/clair-postgres-conf-sample/clair-postgres/0
+sdb      8:16   0    20G  0 disk 
+sdc      8:32   0    20G  0 disk 
+sdd      8:48   0    20G  0 disk 
+sde      8:64   0    20G  0 disk 
+sdf      8:80   0    20G  0 disk 
+[root@worker02 ~]# sgdisk --zap-all /dev/sdb
+Creating new GPT entries in memory.
+GPT data structures destroyed! You may now partition the disk using fdisk or
+other utilities.
+[root@worker02 ~]# sgdisk --zap-all /dev/sdc
+Creating new GPT entries in memory.
+GPT data structures destroyed! You may now partition the disk using fdisk or
+other utilities.
+[root@worker02 ~]# sgdisk --zap-all /dev/sdd
+Creating new GPT entries in memory.
+GPT data structures destroyed! You may now partition the disk using fdisk or
+other utilities.
+[root@worker02 ~]# sgdisk --zap-all /dev/sde
+Creating new GPT entries in memory.
+GPT data structures destroyed! You may now partition the disk using fdisk or
+other utilities.
+[root@worker02 ~]# sgdisk --zap-all /dev/sdf
+Creating new GPT entries in memory.
+GPT data structures destroyed! You may now partition the disk using fdisk or
+other utilities.
+[root@worker02 ~]# wipefs -fa /dev/sdb
+[root@worker02 ~]# wipefs -fa /dev/sdc
+[root@worker02 ~]# wipefs -fa /dev/sdd
+[root@worker02 ~]# wipefs -fa /dev/sde
+[root@worker02 ~]# wipefs -fa /dev/sdf
+
+
+[root@bastion SR]# oc scale deployment rook-ceph-operator --replicas=1
+deployment.apps/rook-ceph-operator scaled
+[root@bastion SR]# oc scale deployment ocs-operator --replicas=1
+deployment.apps/ocs-operator scaled
+
+
+// 상태 변화
+
+[root@bastion SR]# oc get pods -n openshift-storage -o wide |grep worker02
+csi-cephfsplugin-bbctb                                            2/2     Running                 4                  16d     10.184.134.80   worker02.ocp4.example.com   <none>           <none>
+csi-rbdplugin-nc6g7                                               3/3     Running                 6                  16d     10.184.134.80   worker02.ocp4.example.com   <none>           <none>
+ocs-operator-dc967b5c9-q4hns                                      1/1     Running                 0                  4m47s   10.131.0.166    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-crashcollector-worker02.ocp4.example.com-84c858b48q44   1/1     Running                 2                  23h     10.131.1.247    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-exporter-worker02.ocp4.example.com-8487b6cbf-cr82t      1/1     Running                 2                  23h     10.131.1.246    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-mon-a-668494f5f5-fc9pd                                  2/2     Running                 4                  23h     10.131.1.244    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-operator-6c4dd69678-plhvt                               1/1     Running                 0                  4m53s   10.131.0.163    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-11-645fcdd6b-g5s4b                                  0/2     Init:0/4                0                  3m58s   <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1-gb57l      0/1     Init:0/2                0                  4m18s   <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-2abf93592b208f889335bac2631249d1-djdw4      0/1     Completed               0                  4m12s   10.131.0.173    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-3e3d8dd5268f9505c3ce01b74c876c3f-bbgqb      0/1     Completed               0                  4m11s   10.131.0.174    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-43a4af3b7fc9948e383f3fefe4fc9d5d-z2mx2      0/1     Completed               0                  4m10s   10.131.0.176    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010-5bbkb      0/1     Init:0/2                0                  4m14s   <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea-7g4qb      0/1     Init:0/2                0                  4m15s   <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-df93b282c4bd1b379ccdf39ec7208e16-pp9tf      0/1     Completed               0                  4m10s   10.131.0.175    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-f951c7045980271866bbad6cf15910a6-kjpkj      0/1     Completed               0                  4m9s    10.131.0.177    worker02.ocp4.example.com   <none>           <none>
+
+
+
+sh-5.1$ ceph -s
+  cluster:
+    id:     eb10e517-286d-4910-be59-3f060433ea58
+    health: HEALTH_WARN
+            Degraded data redundancy: 9312/43791 objects degraded (21.265%), 219 pgs degraded, 250 pgs undersized
+            51 pgs not deep-scrubbed in time
+            51 pgs not scrubbed in time
+ 
+  services:
+    mon: 3 daemons, quorum a,c,d (age 22h)
+    mgr: a(active, since 11w)
+    mds: 1/1 daemons up, 1 hot standby
+    osd: 17 osds: 11 up (since 22h), 16 in (since 3m); 143 remapped pgs
+    rgw: 1 daemon active (1 hosts, 1 zones)
+ 
+  data:
+    volumes: 1/1 healthy
+    pools:   12 pools, 393 pgs
+    objects: 14.60k objects, 54 GiB
+    usage:   135 GiB used, 60 GiB / 195 GiB avail
+    pgs:     9312/43791 objects degraded (21.265%)
+             5285/43791 objects misplaced (12.069%)
+             219 active+undersized+degraded
+             143 active+clean+remapped
+             31  active+undersized
+ 
+  io:
+    client:   938 B/s rd, 33 KiB/s wr, 1 op/s rd, 2 op/s wr
+ 
+sh-5.1$ ceph osd tree
+ID  CLASS  WEIGHT   TYPE NAME                           STATUS  REWEIGHT  PRI-AFF
+-1         0.20955  root default                                                 
+-7         0.10233      host worker01-ocp4-example-com                           
+ 3    ssd  0.01949          osd.3                           up   0.70000  1.00000
+ 5    ssd  0.01949          osd.5                           up   0.70000  1.00000
+ 8    ssd  0.00490          osd.8                           up   0.70000  1.00000
+ 9    ssd  0.01949          osd.9                           up   0.70000  1.00000
+14    ssd  0.01949          osd.14                          up   1.00000  1.00000
+15    ssd  0.01949          osd.15                          up   1.00000  1.00000
+-5         0.10722      host worker03-ocp4-example-com                           
+ 0    ssd  0.01949          osd.0                           up   1.00000  1.00000
+ 2    ssd  0.01949          osd.2                         down         0  1.00000
+ 6    ssd  0.01949          osd.6                           up   1.00000  1.00000
+10    ssd  0.01949          osd.10                          up   1.00000  1.00000
+12    ssd  0.01949          osd.12                          up   1.00000  1.00000
+16    ssd  0.00980          osd.16                          up   1.00000  1.00000
+ 1    ssd        0  osd.1                                 down   1.00000  1.00000
+ 4    ssd        0  osd.4                                 down   1.00000  1.00000
+ 7    ssd        0  osd.7                                 down   1.00000  1.00000
+11    ssd        0  osd.11                                down   1.00000  1.00000
+13    ssd        0  osd.13                                down   1.00000  1.00000
+
+
+이벤트 로그
+root@bastion ~]# oc get event oc get event -n openshift-storage --sort-by='.lastTimestamp'
+..
+5m45s       Normal    SuccessfulCreate         replicaset/rook-ceph-osd-11-645fcdd6b                              Created pod: rook-ceph-osd-11-645fcdd6b-ppx44
+4m20s       Normal    BackingStorePhaseReady   backingstore/noobaa-default-backing-store                          Backing store mode: OPTIMAL
+3m54s       Warning   FailedMapVolume          pod/rook-ceph-osd-11-645fcdd6b-g5s4b                               MapVolume.EvalHostSymlinks failed for volume "local-pv-defad918" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c2994bc18d82a463afd1396c9f01: no such file or directory
+3m47s       Warning   FailedMount              pod/rook-ceph-osd-11-645fcdd6b-g5s4b                               Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-169fq97], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+2m38s       Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-39t5kzf         waiting for pod rook-ceph-osd-prepare-0790b2c8c8386df662820c1f9333a53e-nd6bk to be scheduled
+2m38s       Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-38shztx         waiting for pod rook-ceph-osd-prepare-3e82e7403537bee24aaf5c4d9c64add2-2pjm5 to be scheduled
+2m38s       Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-34dwk8l         waiting for pod rook-ceph-osd-prepare-633f057778384c2a098aa1d9ba4e0ef4-2jhw4 to be scheduled
+2m38s       Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-37wqqkv         waiting for pod rook-ceph-osd-prepare-df7823ecc4392b92681fd91f9ca38464-kcclz to be scheduled
+2m38s       Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-36l2dzp         waiting for pod rook-ceph-osd-prepare-bb8e2ed694cca2141848865901444489-vfn5w to be scheduled
+2m38s       Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-35c8dvw         waiting for pod rook-ceph-osd-prepare-a4b8fdb6594d3534c639c268afa0bd35-p5n8h to be scheduled
+2m38s       Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-33zwsl6         waiting for pod rook-ceph-osd-prepare-64a71b9f2869eb9e68a3b5bac955160d-7pktm to be scheduled
+2m16s       Normal    ScalingReplicaSet        deployment/rook-ceph-osd-13                                        Scaled up replica set rook-ceph-osd-13-56ccddd4dc to 1 from 0
+2m16s       Normal    SuccessfulCreate         replicaset/rook-ceph-osd-13-56ccddd4dc                             Created pod: rook-ceph-osd-13-56ccddd4dc-t4khs
+2m3s        Warning   FailedMount              pod/rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1-gb57l   Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-1042x52], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+2m          Warning   FailedMount              pod/rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea-7g4qb   Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-23gbvqg], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+119s        Warning   FailedMount              pod/rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010-5bbkb   Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-27nfbc4], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+118s        Warning   BackOff                  pod/rook-ceph-osd-2-7bc8486d6d-kfcvc                               Back-off restarting failed container activate in pod rook-ceph-osd-2-7bc8486d6d-kfcvc_openshift-storage(793f0cdb-6e41-487b-ab33-e751b46ce25c)
+118s        Warning   FailedMount              pod/rook-ceph-osd-prepare-1358d7dbd958308e7db076ea07f8494e-8x9qg   Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-14fkdqn], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+98s         Warning   FailedMapVolume          pod/rook-ceph-osd-11-645fcdd6b-ppx44                               MapVolume.EvalHostSymlinks failed for volume "local-pv-defad918" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c2994bc18d82a463afd1396c9f01: no such file or directory
+98s         Warning   FailedMount              pod/rook-ceph-osd-11-645fcdd6b-ppx44                               Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-169fq97], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+13s         Warning   FailedMount              pod/rook-ceph-osd-13-56ccddd4dc-t4khs                              Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-19xssv2], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+9s          Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1-gb57l   MapVolume.EvalHostSymlinks failed for volume "local-pv-8d47a947" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29f6d24cebcf8a9a34d11525112: no such file or directory
+8s          Warning   FailedMapVolume          pod/rook-ceph-osd-13-56ccddd4dc-t4khs                              MapVolume.EvalHostSymlinks failed for volume "local-pv-2fef99a6" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29cea473eddde3adb41874e634c: no such file or directory
+6s          Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010-5bbkb   MapVolume.EvalHostSymlinks failed for volume "local-pv-8c0c6b60" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c294516efa6ba98557ad780437a8: no such file or directory
+6s          Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea-7g4qb   MapVolume.EvalHostSymlinks failed for volume "local-pv-108dc58b" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29c7967a89c7b773dec358afcfd: no such file or directory
+4s          Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-1358d7dbd958308e7db076ea07f8494e-8x9qg   MapVolume.EvalHostSymlinks failed for volume "local-pv-9cff2c33" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29592071a3100da27c9aac62f7c: no such file or directory
+
+
+앗.. wwn을 생성할수 없는건가?
+
+1. 노드 드레인 (Pod 대피)
+oc adm drain worker02.ocp4.example.com --ignore-daemonsets --delete-emptydir-data --force
+
+2. 노드 스케줄 불가로 설정
+oc adm cordon worker02.ocp4.example.com
+
+3. 노드 상태 확인
+oc get nodes
+
+4. 시스템 명령으로 shutdown
+poweroff
+
+vm poweroff 후 advanced option에서 설정.. oc ad
+worker02생성할때 uuid설정을 안해준듯??
+ disk.EnableUUID TRUE
+
+
+
+
+[root@worker02 odflvsc]# cd /mnt/local-storage/odflvsc
+
+for dev in sdb sdc sdd sde sdf; do
+    WWN=$(lsblk -dn -o NAME,WWN | grep "$dev" | awk '{print $2}')
+    if [[ -n "$WWN" ]]; then
+        ln -sf /dev/$dev ./wwn-0x$WWN
+        echo "🔗 Linked wwn-0x$WWN -> /dev/$dev"
+    fi
+done
+🔗 Linked wwn-0x0x6000c2968abf871e12c390f8efaacfac -> /dev/sdb
+🔗 Linked wwn-0x0x6000c29bd8a25072c89d4900b01771db -> /dev/sdc
+🔗 Linked wwn-0x0x6000c2938263ab8ac33b1af31b07a18f -> /dev/sdd
+🔗 Linked wwn-0x0x6000c29733af1dcc7418b06d41277627 -> /dev/sde
+🔗 Linked wwn-0x0x6000c299de31047d1153572f4ced19e1 -> /dev/sdf
+
+
+적용전>
+[root@worker02 odflvsc]# ls -altr
+total 0
+drwxr-xr-x. 3 root root 21 Jun 11 05:00 ..
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sdb -> /dev/sdb
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sdc -> /dev/sdc
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sdd -> /dev/sdd
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sde -> /dev/sde
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sdf -> /dev/sdf
+drwxr-xr-x. 2 root root 61 Jun 11 05:00 .
+
+적용후>
+[root@worker02 odflvsc]# ls -altr
+total 4
+drwxr-xr-x. 3 root root   21 Jun 11 05:00 ..
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdb -> /dev/sdb
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdc -> /dev/sdc
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdd -> /dev/sdd
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sde -> /dev/sde
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdf -> /dev/sdf
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c2968abf871e12c390f8efaacfac -> /dev/sdb
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c29bd8a25072c89d4900b01771db -> /dev/sdc
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c2938263ab8ac33b1af31b07a18f -> /dev/sdd
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c29733af1dcc7418b06d41277627 -> /dev/sde
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c299de31047d1153572f4ced19e1 -> /dev/sdf
+
+
+
+// 비교
+[root@worker03 mnt]# ls -altr
+total 4
+drwxr-xr-x. 25 root root 4096 Sep 27  2024 ..
+drwxr-xr-x.  3 root root   27 Oct  4  2024 .
+drwxr-xr-x.  3 root root   21 Oct  4  2024 local-storage
+[root@worker03 mnt]# cd local-storage
+[root@worker03 local-storage]# ls -altr
+total 4
+drwxr-xr-x. 3 root root   27 Oct  4  2024 ..
+drwxr-xr-x. 3 root root   21 Oct  4  2024 .
+drwxr-xr-x. 2 root root 4096 Mar 20 01:48 odflvsc
+[root@worker03 local-storage]# cd odflvsc
+[root@worker03 odflvsc]# ls -altr
+total 4
+drwxr-xr-x. 3 root root   21 Oct  4  2024 ..
+lrwxrwxrwx. 1 root root   54 Oct 31  2024 wwn-0x6000c29074242d2ed8ddaf0e7e2feebe -> /dev/disk/by-id/wwn-0x6000c29074242d2ed8ddaf0e7e2feebe
+lrwxrwxrwx. 1 root root    8 Oct 31  2024 sdc -> /dev/sda
+lrwxrwxrwx. 1 root root    8 Oct 31  2024 sdb -> /dev/sdb
+lrwxrwxrwx. 1 root root   54 Jan 13 06:03 wwn-0x6000c29adf36c5ea4ac0ac9263d854ea -> /dev/disk/by-id/wwn-0x6000c29adf36c5ea4ac0ac9263d854ea
+lrwxrwxrwx. 1 root root   54 Feb  4 06:51 wwn-0x6000c297bf235050ad15befae52aca5c -> /dev/disk/by-id/wwn-0x6000c297bf235050ad15befae52aca5c
+lrwxrwxrwx. 1 root root   54 Feb 12 07:10 wwn-0x6000c295ecf61b1167b17b2b26681b89 -> /dev/disk/by-id/wwn-0x6000c295ecf61b1167b17b2b26681b89
+lrwxrwxrwx. 1 root root   54 Mar 20 01:48 wwn-0x6000c2910852f76323a6c1aa772f9785 -> /dev/disk/by-id/wwn-0x6000c2910852f76323a6c1aa772f9785
+
+
+worker03에 맞춰서 다시 이렇게 맞들어봄..
+
+
+[root@worker02 ~]# cd /mnt/local-storage/odflvsc
+
+for dev in sdb sdc sdd sde sdf; do
+  wwn=$(udevadm info --query=all --name=/dev/$dev | grep ID_WWN= | cut -d= -f2)
+  if [[ -n "$wwn" ]]; then
+    ln -sf /dev/disk/by-id/wwn-0x$wwn ./wwn-0x$wwn
+    echo "🔗 Created wwn-0x$wwn → /dev/disk/by-id/wwn-0x$wwn"
+  else
+    echo "⚠️  WWN not found for /dev/$dev"
+  fi
+done
+🔗 Created wwn-0x0x6000c2968abf871e → /dev/disk/by-id/wwn-0x0x6000c2968abf871e
+🔗 Created wwn-0x0x6000c29bd8a25072 → /dev/disk/by-id/wwn-0x0x6000c29bd8a25072
+🔗 Created wwn-0x0x6000c2938263ab8a → /dev/disk/by-id/wwn-0x0x6000c2938263ab8a
+🔗 Created wwn-0x0x6000c29733af1dcc → /dev/disk/by-id/wwn-0x0x6000c29733af1dcc
+🔗 Created wwn-0x0x6000c299de31047d → /dev/disk/by-id/wwn-0x0x6000c299de31047d
+[root@worker02 odflvsc]# cd /mnt^C
+[root@worker02 odflvsc]# ls -altr
+total 4
+drwxr-xr-x. 3 root root   21 Jun 11 05:00 ..
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdb -> /dev/sdb
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdc -> /dev/sdc
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdd -> /dev/sdd
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sde -> /dev/sde
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdf -> /dev/sdf
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c2968abf871e12c390f8efaacfac -> /dev/sdb
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c29bd8a25072c89d4900b01771db -> /dev/sdc
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c2938263ab8ac33b1af31b07a18f -> /dev/sdd
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c29733af1dcc7418b06d41277627 -> /dev/sde
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c299de31047d1153572f4ced19e1 -> /dev/sdf
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c2968abf871e -> /dev/disk/by-id/wwn-0x0x6000c2968abf871e
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c29bd8a25072 -> /dev/disk/by-id/wwn-0x0x6000c29bd8a25072
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c2938263ab8a -> /dev/disk/by-id/wwn-0x0x6000c2938263ab8a
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c29733af1dcc -> /dev/disk/by-id/wwn-0x0x6000c29733af1dcc
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c299de31047d -> /dev/disk/by-id/wwn-0x0x6000c299de31047d
+
+
+[root@bastion ~]# oc get pod -n openshift-storage -o wide |grep -i worker02
+csi-cephfsplugin-bbctb                                            2/2     Running                 6                   16d     10.184.134.80   worker02.ocp4.example.com   <none>           <none>
+csi-rbdplugin-nc6g7                                               3/3     Running                 9                   16d     10.184.134.80   worker02.ocp4.example.com   <none>           <none>
+ocs-operator-dc967b5c9-nmsfj                                      1/1     Running                 0                   21m     10.131.0.69     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-crashcollector-worker02.ocp4.example.com-84c858bl6zfs   1/1     Running                 0                   48m     10.131.0.19     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-exporter-worker02.ocp4.example.com-8487b6cbf-5d7g8      1/1     Running                 0                   48m     10.131.0.20     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-mon-a-668494f5f5-s24cm                                  2/2     Running                 0                   59m     10.131.0.6      worker02.ocp4.example.com   <none>           <none>
+rook-ceph-operator-6c4dd69678-s5bck                               1/1     Running                 0                   21m     10.131.0.65     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-11-5b45d66ff5-zq6vw                                 0/2     Init:CrashLoopBackOff   5 (86s ago)         4m27s   10.131.0.80     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-13-58458fb84c-gz8ct                                 0/2     Init:Error              3 (45s ago)         61s     10.131.0.81     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1-w2nrj      0/1     Init:0/2                0                   21m     <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-3e3d8dd5268f9505c3ce01b74c876c3f-wcl6j      0/1     Completed               0                   21m     10.131.0.74     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-43a4af3b7fc9948e383f3fefe4fc9d5d-5tm2c      0/1     Completed               0                   21m     10.131.0.75     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010-lgqf5      0/1     Init:0/2                0                   21m     <none>          worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea-fwm6g      0/1     Init:0/2                0                   21m     <none>          worker02.ocp4.example.com   <none>           <none>
+
+
+이벤트 확인하니,, 심볼릭 링크가 잘못됨..
+
+2m13s       Normal    Started                  pod/rook-ceph-osd-13-58458fb84c-gz8ct                                      Started container blkdevmapper
+2m2s        Warning   FailedMount              pod/rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea-fwm6g           Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-23gbvqg], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+118s        Warning   FailedMount              pod/rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1-w2nrj           Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-1042x52], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+117s        Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010-lgqf5           MapVolume.EvalHostSymlinks failed for volume "local-pv-8c0c6b60" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c294516efa6ba98557ad780437a8: no such file or directory
+115s        Warning   FailedMount              pod/rook-ceph-osd-prepare-1358d7dbd958308e7db076ea07f8494e-fmh4z           Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-14fkdqn], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+110s        Warning   FailedMount              pod/rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010-lgqf5           Unable to attach or mount volumes: unmounted volumes=[ocs-deviceset-odflvsc-0-data-27nfbc4], unattached volumes=[], failed to process volumes=[]: timed out waiting for the condition
+86s         Normal    Started                  pod/rook-ceph-osd-13-58458fb84c-gz8ct                                      Started container activate
+86s         Normal    Created                  pod/rook-ceph-osd-13-58458fb84c-gz8ct                                      Created container activate
+86s         Normal    Pulled                   pod/rook-ceph-osd-13-58458fb84c-gz8ct                                      Container image "registry.redhat.io/rhceph/rhceph-6-rhel9@sha256:15311d0ca7d6fcc9ca18760e751e359c6daf9745dfa4b7402c17e36e58e9765d" already present on machine
+59s         Warning   BackOff                  pod/rook-ceph-osd-13-58458fb84c-gz8ct                                      Back-off restarting failed container activate in pod rook-ceph-osd-13-58458fb84c-gz8ct_openshift-storage(743c6af7-ba81-4779-a8a9-a73d6d1ea026)
+56s         Normal    BackingStorePhaseReady   backingstore/noobaa-default-backing-store                                  Backing store mode: OPTIMAL
+39s         Warning   BackOff                  pod/rook-ceph-osd-11-5b45d66ff5-zq6vw                                      Back-off restarting failed container activate in pod rook-ceph-osd-11-5b45d66ff5-zq6vw_openshift-storage(aaa8c296-d266-42de-88fd-2c6363407339)
+17s         Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-40nxsfm                 waiting for pod rook-ceph-osd-prepare-02939b3ee163cc553620022c99517a5a-kkqhk to be scheduled
+17s         Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-412lpt8                 waiting for pod rook-ceph-osd-prepare-5992ebb6ec8f4ca24002114626acdd8e-h4ptg to be scheduled
+17s         Normal    WaitForPodScheduled      persistentvolumeclaim/ocs-deviceset-odflvsc-0-data-42q4jtl                 waiting for pod rook-ceph-osd-prepare-8c79c570e81a1a6d7edc123ac3137d2c-8vd6h to be scheduled
+8s          Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea-fwm6g           MapVolume.EvalHostSymlinks failed for volume "local-pv-108dc58b" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29c7967a89c7b773dec358afcfd: no such file or directory
+4s          Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1-w2nrj           MapVolume.EvalHostSymlinks failed for volume "local-pv-8d47a947" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29f6d24cebcf8a9a34d11525112: no such file or directory
+2s          Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-1358d7dbd958308e7db076ea07f8494e-fmh4z           MapVolume.EvalHostSymlinks failed for volume "local-pv-9cff2c33" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29592071a3100da27c9aac62f7c: no such file or directory
+
+
+
+잘못된 심볼릭 링크 삭제
+
+[root@worker02 odflvsc]# ls -altr
+total 4
+drwxr-xr-x. 3 root root   21 Jun 11 05:00 ..
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdb -> /dev/sdb
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdc -> /dev/sdc
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdd -> /dev/sdd
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sde -> /dev/sde
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdf -> /dev/sdf
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c2968abf871e12c390f8efaacfac -> /dev/sdb
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c29bd8a25072c89d4900b01771db -> /dev/sdc
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c2938263ab8ac33b1af31b07a18f -> /dev/sdd
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c29733af1dcc7418b06d41277627 -> /dev/sde
+lrwxrwxrwx. 1 root root    8 Jun 27 08:51 wwn-0x0x6000c299de31047d1153572f4ced19e1 -> /dev/sdf
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c2968abf871e -> /dev/disk/by-id/wwn-0x0x6000c2968abf871e
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c29bd8a25072 -> /dev/disk/by-id/wwn-0x0x6000c29bd8a25072
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c2938263ab8a -> /dev/disk/by-id/wwn-0x0x6000c2938263ab8a
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c29733af1dcc -> /dev/disk/by-id/wwn-0x0x6000c29733af1dcc
+lrwxrwxrwx. 1 root root   40 Jun 27 08:57 wwn-0x0x6000c299de31047d -> /dev/disk/by-id/wwn-0x0x6000c299de31047d
+drwxr-xr-x. 2 root root 4096 Jun 27 08:57 .
+[root@worker02 odflvsc]# find . -type l -name 'wwn-0x0x*' -exec rm -v {} \;
+removed './wwn-0x0x6000c2968abf871e12c390f8efaacfac'
+removed './wwn-0x0x6000c29bd8a25072c89d4900b01771db'
+removed './wwn-0x0x6000c2938263ab8ac33b1af31b07a18f'
+removed './wwn-0x0x6000c29733af1dcc7418b06d41277627'
+removed './wwn-0x0x6000c299de31047d1153572f4ced19e1'
+removed './wwn-0x0x6000c2968abf871e'
+removed './wwn-0x0x6000c29bd8a25072'
+removed './wwn-0x0x6000c2938263ab8a'
+removed './wwn-0x0x6000c29733af1dcc'
+removed './wwn-0x0x6000c299de31047d'
+[root@worker02 odflvsc]# ls -altr
+total 0
+drwxr-xr-x. 3 root root 21 Jun 11 05:00 ..
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sdb -> /dev/sdb
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sdc -> /dev/sdc
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sdd -> /dev/sdd
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sde -> /dev/sde
+lrwxrwxrwx. 1 root root  8 Jun 11 05:00 sdf -> /dev/sdf
+drwxr-xr-x. 2 root root 61 Jun 27 09:03 .
+
+
+다시 wwn 생성
+
+for dev in sdb sdc sdd sde sdf; do
+  wwn=$(udevadm info --query=all --name=/dev/$dev | grep ID_WWN= | cut -d= -f2)
+  if [[ -n "$wwn" ]]; then
+    ln -sf /dev/disk/by-id/wwn-0x$wwn ./wwn-0x$wwn
+    echo "✅ Linked wwn-0x$wwn -> /dev/disk/by-id/wwn-0x$wwn"
+  else
+    echo "⚠️  WWN not found for /dev/$dev"
+  fi
+done
+
+
+
+[root@worker02 odflvsc]# ls -altr
+total 4
+drwxr-xr-x. 3 root root   21 Jun 11 05:00 ..
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdb -> /dev/sdb
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdc -> /dev/sdc
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdd -> /dev/sdd
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sde -> /dev/sde
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdf -> /dev/sdf
+lrwxrwxrwx. 1 root root   40 Jun 27 09:04 wwn-0x0x6000c2968abf871e -> /dev/disk/by-id/wwn-0x0x6000c2968abf871e
+lrwxrwxrwx. 1 root root   40 Jun 27 09:04 wwn-0x0x6000c29bd8a25072 -> /dev/disk/by-id/wwn-0x0x6000c29bd8a25072
+lrwxrwxrwx. 1 root root   40 Jun 27 09:04 wwn-0x0x6000c2938263ab8a -> /dev/disk/by-id/wwn-0x0x6000c2938263ab8a
+lrwxrwxrwx. 1 root root   40 Jun 27 09:04 wwn-0x0x6000c29733af1dcc -> /dev/disk/by-id/wwn-0x0x6000c29733af1dcc
+lrwxrwxrwx. 1 root root   40 Jun 27 09:04 wwn-0x0x6000c299de31047d -> /dev/disk/by-id/wwn-0x0x6000c299de31047d
+
+
+// pod 확인
+
+
+60s         Normal    SuccessfulCreate         replicaset/rook-ceph-osd-11-5b45d66ff5                                     Created pod: rook-ceph-osd-11-5b45d66ff5-s957h
+59s         Normal    Created                  pod/rook-ceph-osd-11-5b45d66ff5-s957h                                      Created container blkdevmapper
+59s         Normal    Started                  pod/rook-ceph-osd-11-5b45d66ff5-s957h                                      Started container blkdevmapper
+59s         Normal    Pulled                   pod/rook-ceph-osd-11-5b45d66ff5-s957h                                      Container image "registry.redhat.io/rhceph/rhceph-6-rhel9@sha256:15311d0ca7d6fcc9ca18760e751e359c6daf9745dfa4b7402c17e36e58e9765d" already present on machine
+41s         Normal    SuccessfulMountVolume    pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      MapVolume.MapPodDevice succeeded for volume "local-pv-a0fad54f" globalMapPath "/var/lib/kubelet/plugins/kubernetes.io~local-volume/volumeDevices/local-pv-a0fad54f"
+41s         Normal    SuccessfulCreate         replicaset/rook-ceph-osd-13-58458fb84c                                     Created pod: rook-ceph-osd-13-58458fb84c-g8tl7
+41s         Normal    SuccessfulMountVolume    pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      MapVolume.MapPodDevice succeeded for volume "local-pv-a0fad54f" volumeMapPath "/var/lib/kubelet/pods/6417e75d-30c9-42bc-82c5-9aba61822e5f/volumeDevices/kubernetes.io~local-volume"
+40s         Normal    AddedInterface           pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      Add eth0 [10.131.0.84/23] from ovn-kubernetes
+40s         Normal    Started                  pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      Started container blkdevmapper
+40s         Normal    Created                  pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      Created container blkdevmapper
+40s         Normal    Pulled                   pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      Container image "registry.redhat.io/rhceph/rhceph-6-rhel9@sha256:15311d0ca7d6fcc9ca18760e751e359c6daf9745dfa4b7402c17e36e58e9765d" already present on machine
+25s         Warning   BackOff                  pod/rook-ceph-osd-2-7bc8486d6d-kfcvc                                       Back-off restarting failed container activate in pod rook-ceph-osd-2-7bc8486d6d-kfcvc_openshift-storage(793f0cdb-6e41-487b-ab33-e751b46ce25c)
+24s         Normal    Pulled                   pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      Container image "registry.redhat.io/rhceph/rhceph-6-rhel9@sha256:15311d0ca7d6fcc9ca18760e751e359c6daf9745dfa4b7402c17e36e58e9765d" already present on machine
+24s         Normal    Created                  pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      Created container activate
+24s         Normal    Started                  pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      Started container activate
+14s         Normal    Pulled                   pod/rook-ceph-osd-11-5b45d66ff5-s957h                                      Container image "registry.redhat.io/rhceph/rhceph-6-rhel9@sha256:15311d0ca7d6fcc9ca18760e751e359c6daf9745dfa4b7402c17e36e58e9765d" already present on machine
+14s         Normal    Created                  pod/rook-ceph-osd-11-5b45d66ff5-s957h                                      Created container activate
+14s         Normal    Started                  pod/rook-ceph-osd-11-5b45d66ff5-s957h                                      Started container activate
+13s         Warning   BackOff                  pod/rook-ceph-osd-11-5b45d66ff5-s957h                                      Back-off restarting failed container activate in pod rook-ceph-osd-11-5b45d66ff5-s957h_openshift-storage(b93a53fa-eb1e-4520-9734-472c1fe80b69)
+9s          Warning   BackOff                  pod/rook-ceph-osd-13-58458fb84c-g8tl7                                      Back-off restarting failed container activate in pod rook-ceph-osd-13-58458fb84c-g8tl7_openshift-storage(6417e75d-30c9-42bc-82c5-9aba61822e5f)
+
+
+# 1. 잘못된 심볼릭 링크 제거
+rm -f /mnt/local-storage/odflvsc/wwn-*
+
+// 확인
+[root@worker02 odflvsc]# ls -al /dev/disk/by-id/wwn-0x6000c29bd8a25072c89d4900b01771db 
+lrwxrwxrwx. 1 root root 9 Jun 27 08:31 /dev/disk/by-id/wwn-0x6000c29bd8a25072c89d4900b01771db -> ../../sdc
+[root@worker02 odflvsc]# ls -al /dev/disk/by-id/wwn-0x6000c2968abf871e12c390f8efaacfac
+lrwxrwxrwx. 1 root root 9 Jun 27 08:37 /dev/disk/by-id/wwn-0x6000c2968abf871e12c390f8efaacfac -> ../../sdb
+[root@worker02 odflvsc]# ls -al /dev/disk/by-id/wwn-0x6000c2938263ab8ac33b1af31b07a18f
+lrwxrwxrwx. 1 root root 9 Jun 27 08:37 /dev/disk/by-id/wwn-0x6000c2938263ab8ac33b1af31b07a18f -> ../../sdd
+[root@worker02 odflvsc]# ls -al /dev/disk/by-id/wwn-0x6000c299de31047d1153572f4ced19e1
+lrwxrwxrwx. 1 root root 9 Jun 27 09:05 /dev/disk/by-id/wwn-0x6000c299de31047d1153572f4ced19e1 -> ../../sdf
+[root@worker02 odflvsc]# ls -al /dev/disk/by-id/wwn-0x6000c29733af1dcc7418b06d41277627
+lrwxrwxrwx. 1 root root 9 Jun 27 09:05 /dev/disk/by-id/wwn-0x6000c29733af1dcc7418b06d41277627 -> ../../sde
+
+// 심볼릭 링크 재생성
+
+ln -s /dev/disk/by-id/wwn-0x6000c29bd8a25072c89d4900b01771db /mnt/local-storage/odflvsc/wwn-0x6000c29bd8a25072c89d4900b01771db
+ln -s /dev/disk/by-id/wwn-0x6000c2968abf871e12c390f8efaacfac /mnt/local-storage/odflvsc/wwn-0x6000c2968abf871e12c390f8efaacfac
+ln -s /dev/disk/by-id/wwn-0x6000c2938263ab8ac33b1af31b07a18f /mnt/local-storage/odflvsc/wwn-0x6000c2938263ab8ac33b1af31b07a18f
+ln -s /dev/disk/by-id/wwn-0x6000c299de31047d1153572f4ced19e1 /mnt/local-storage/odflvsc/wwn-0x6000c299de31047d1153572f4ced19e1
+ln -s /dev/disk/by-id/wwn-0x6000c29733af1dcc7418b06d41277627 /mnt/local-storage/odflvsc/wwn-0x6000c29733af1dcc7418b06d41277627
+
+
+
+[root@worker02 odflvsc]# ls -altr
+total 4
+drwxr-xr-x. 3 root root   21 Jun 11 05:00 ..
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdb -> /dev/sdb
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdc -> /dev/sdc
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdd -> /dev/sdd
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sde -> /dev/sde
+lrwxrwxrwx. 1 root root    8 Jun 11 05:00 sdf -> /dev/sdf
+lrwxrwxrwx. 1 root root   54 Jun 27 09:23 wwn-0x6000c29bd8a25072c89d4900b01771db -> /dev/disk/by-id/wwn-0x6000c29bd8a25072c89d4900b01771db
+lrwxrwxrwx. 1 root root   54 Jun 27 09:23 wwn-0x6000c2968abf871e12c390f8efaacfac -> /dev/disk/by-id/wwn-0x6000c2968abf871e12c390f8efaacfac
+lrwxrwxrwx. 1 root root   54 Jun 27 09:23 wwn-0x6000c2938263ab8ac33b1af31b07a18f -> /dev/disk/by-id/wwn-0x6000c2938263ab8ac33b1af31b07a18f
+lrwxrwxrwx. 1 root root   54 Jun 27 09:23 wwn-0x6000c299de31047d1153572f4ced19e1 -> /dev/disk/by-id/wwn-0x6000c299de31047d1153572f4ced19e1
+lrwxrwxrwx. 1 root root   54 Jun 27 09:23 wwn-0x6000c29733af1dcc7418b06d41277627 -> /dev/disk/by-id/wwn-0x6000c29733af1dcc7418b06d41277627
+
+
+
+"local-pv-9cff2c33" <-- worker03
+
+worker02
+"local-pv-108dc58b"  wwn-0x6000c29c7967a89c7b773dec358afcfd
+"local-pv-8d47a947"   wwn-0x6000c29f6d24cebcf8a9a34d11525112
+"local-pv-8c0c6b60"   wwn-0x6000c294516efa6ba98557ad780437a8
+
+[root@worker02 by-id]# ls -al |grep fcfd
+[root@worker02 by-id]# ls -al |grep 5112
+[root@worker02 by-id]# ls -al |grep ad780437a8
+>> 없음..
+
+
+[root@bastion ~]#  oc get event -n openshift-storage --sort-by='.lastTimestamp' |grep "no such file or directory" |grep "local-pv"|awk '{print $9,$12}' |sort |uniq -c
+      4 "local-pv-108dc58b" /var/mnt/local-storage/odflvsc/wwn-0x6000c29c7967a89c7b773dec358afcfd:
+      2 "local-pv-2fef99a6" /var/mnt/local-storage/odflvsc/wwn-0x6000c29cea473eddde3adb41874e634c:<
+      1 "local-pv-456b5c30" /var/mnt/local-storage/odflvsc/wwn-0x6000c29d4766d995fb1d37ad1a5c996b:<
+      4 "local-pv-8c0c6b60" /var/mnt/local-storage/odflvsc/wwn-0x6000c294516efa6ba98557ad780437a8:
+      4 "local-pv-8d47a947" /var/mnt/local-storage/odflvsc/wwn-0x6000c29f6d24cebcf8a9a34d11525112:
+      4 "local-pv-defad918" /var/mnt/local-storage/odflvsc/wwn-0x6000c2994bc18d82a463afd1396c9f01:<
+
+     3 "local-pv-9cff2c33" /var/mnt/local-storage/odflvsc/wwn-0x6000c29592071a3100da27c9aac62f7c:  <-- worker03
+
+
+[root@bastion ~]# oc get pv/local-pv-2fef99a6 -o yaml  |grep -i annotations -A5
+  annotations:
+    pv.kubernetes.io/bound-by-controller: "yes"
+    pv.kubernetes.io/provisioned-by: local-volume-provisioner-worker02.ocp4.example.com
+    storage.openshift.com/device-id: wwn-0x6000c29cea473eddde3adb41874e634c
+    storage.openshift.com/device-name: sdf
+  creationTimestamp: "2025-02-12T07:09:40Z"
+
+[root@bastion ~]# oc get pv/local-pv-456b5c30 -o yaml |grep -i annotations -A5
+  annotations:
+    pv.kubernetes.io/bound-by-controller: "yes"
+    pv.kubernetes.io/provisioned-by: local-volume-provisioner-worker02.ocp4.example.com
+    storage.openshift.com/device-id: wwn-0x6000c29d4766d995fb1d37ad1a5c996b
+    storage.openshift.com/device-name: sdd
+  creationTimestamp: "2025-01-13T06:02:35Z"
+
+[root@bastion ~]# oc get pv/local-pv-defad918 -o yaml |grep -i annotations -A5
+  annotations:
+    pv.kubernetes.io/bound-by-controller: "yes"
+    pv.kubernetes.io/provisioned-by: local-volume-provisioner-worker02.ocp4.example.com
+    storage.openshift.com/device-id: wwn-0x6000c2994bc18d82a463afd1396c9f01
+    storage.openshift.com/device-name: sde
+  creationTimestamp: "2025-02-04T06:51:46Z"
+
+[root@bastion ~]# oc get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS     CLAIM                                                    STORAGECLASS                  REASON   AGE
+local-pv-108dc58b                          20Gi       RWO            Delete           Bound      openshift-storage/ocs-deviceset-odflvsc-0-data-23gbvqg   odflvsc                                78d
+
+
+
+112s        Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-b6973c0e7b87672fb76acbbed0eef3ea-fwm6g           MapVolume.EvalHostSymlinks failed for volume "local-pv-108dc58b" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29c7967a89c7b773dec358afcfd: no such file or directory
+108s        Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-0905ee552d44236f7290f358053c5dd1-w2nrj           MapVolume.EvalHostSymlinks failed for volume "local-pv-8d47a947" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29f6d24cebcf8a9a34d11525112: no such file or directory
+106s        Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-1358d7dbd958308e7db076ea07f8494e-fmh4z           MapVolume.EvalHostSymlinks failed for volume "local-pv-9cff2c33" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c29592071a3100da27c9aac62f7c: no such file or directory
+100s        Warning   FailedMapVolume          pod/rook-ceph-osd-prepare-8b484a6f0e80439a9c8c48045fa13010-lgqf5           MapVolume.EvalHostSymlinks failed for volume "local-pv-8c0c6b60" : lstat /var/mnt/local-storage/odflvsc/wwn-0x6000c294516efa6ba98557ad780437a8: no such file or directory
+
+[root@bastion ~]# oc get pv/local-pv-108dc58b -o yaml |grep -i annotations -A5
+  annotations:
+    pv.kubernetes.io/bound-by-controller: "yes"
+    pv.kubernetes.io/provisioned-by: local-volume-provisioner-worker02.ocp4.example.com
+    storage.openshift.com/device-id: wwn-0x6000c29c7967a89c7b773dec358afcfd
+    storage.openshift.com/device-name: sdd
+  creationTimestamp: "2025-04-10T05:41:13Z"
+
+
+
+
+// pv 삭제 대상
+
+[root@bastion ~]# sh -x list2.sh
++ oc get pv/local-pv-108dc58b
+NAME                CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS        CLAIM                                                    STORAGECLASS   REASON   AGE
+local-pv-108dc58b   20Gi       RWO            Delete           Terminating   openshift-storage/ocs-deviceset-odflvsc-0-data-23gbvqg   odflvsc                 78d
++ oc get pv/local-pv-2fef99a6
+NAME                CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS     CLAIM                                                    STORAGECLASS   REASON   AGE
+local-pv-2fef99a6   20Gi       RWO            Delete           Released   openshift-storage/ocs-deviceset-odflvsc-0-data-19xssv2   odflvsc                 135d
++ oc get pv/local-pv-456b5c30
+NAME                CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS     CLAIM                                                   STORAGECLASS   REASON   AGE
+local-pv-456b5c30   20Gi       RWO            Delete           Released   openshift-storage/ocs-deviceset-odflvsc-0-data-7xx6f9   odflvsc                 165d
++ oc get pv/local-pv-8c0c6b60
+NAME                CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                                                    STORAGECLASS   REASON   AGE
+local-pv-8c0c6b60   30Gi       RWO            Delete           Bound    openshift-storage/ocs-deviceset-odflvsc-0-data-27nfbc4   odflvsc                 18d
++ oc get pv/local-pv-8d47a947
+NAME                CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                                                    STORAGECLASS   REASON   AGE
+local-pv-8d47a947   20Gi       RWO            Delete           Bound    openshift-storage/ocs-deviceset-odflvsc-0-data-1042x52   odflvsc                 263d
++ oc get pv/local-pv-defad918
+NAME                CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS     CLAIM                                                    STORAGECLASS   REASON   AGE
+local-pv-defad918   20Gi       RWO            Delete           Released   openshift-storage/ocs-deviceset-odflvsc-0-data-169fq97   odflvsc                 143d
+
+
+
+local-pv-108dc58b  삭제 했지만 장시간 삭제되지 않아 강제 처리..
+[root@bastion ~]# oc patch pv local-pv-108dc58b -p '{"metadata":{"finalizers":null}}' --type=merge
+persistentvolume/local-pv-108dc58b patched
+[root@bastion ~]# oc delete pv/local-pv-108dc58b
+Error from server (NotFound): persistentvolumes "local-pv-108dc58b" not found
+[root@bastion ~]# oc get pv/local-pv-108dc58b
+Error from server (NotFound): persistentvolumes "local-pv-108dc58b" not found
+
+그외 아래  두 대상도..
+[root@bastion ~]# oc patch pv/local-pv-8c0c6b60  -p '{"metadata":{"finalizers":null}}' --type=merge
+persistentvolume/local-pv-8c0c6b60 patched
+[root@bastion ~]# oc patch pv/local-pv-8d47a947 -p '{"metadata":{"finalizers":null}}' --type=merge
+persistentvolume/local-pv-8d47a947 patched
+
+
+
+
+[root@bastion ~]# oc get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM                                                    STORAGECLASS                  REASON   AGE
+image-registry                             100Gi      RWX            Retain           Bound       openshift-image-registry/image-registry-storage                                                 309d
+local-pv-10746268                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-315sx2k   odflvsc                                3h46m
+local-pv-2a46b122                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-18ddssr   odflvsc                                135d
+local-pv-43d637ce                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-29kg4qf   odflvsc                                169m
+local-pv-4eb49abb                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-17frprv   odflvsc                                143d
+local-pv-5837c8b2                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-38shztx   odflvsc                                44m
+local-pv-5e3ce3d8                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-21nrndc   odflvsc                                135d
+local-pv-6393368d                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-0sn9ff    odflvsc                                266d
+local-pv-677bf9af                          20Gi       RWO            Delete           Available                                                            odflvsc                                20m
+local-pv-768154e2                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-20928j7   odflvsc                                135d
+local-pv-86722c8e                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-126vjg6   odflvsc                                266d
+local-pv-9cff2c33                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-14fkdqn   odflvsc                                263d
+local-pv-a0fad54f                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-32twhjm   odflvsc                                3h45m
+local-pv-a19b0918                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-8vzjk8    odflvsc                                165d
+local-pv-a1b874ae                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-3wt4xb    odflvsc                                266d
+local-pv-a41a01be                          20Gi       RWO            Delete           Available                                                            odflvsc                                20m
+local-pv-add4e34                           20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-5cpx7b    odflvsc                                266d
+local-pv-be3dad44                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-13md2gw   odflvsc                                263d
+local-pv-bed0505b                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-15dkrth   odflvsc                                265d
+local-pv-bf953f40                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-119fqxf   odflvsc                                239d
+local-pv-cad67fae                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-36l2dzp   odflvsc                                44m
+local-pv-ce2b08a5                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-9n88s2    odflvsc                                165d
+local-pv-cf16150b                          20Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-2n8nhf    odflvsc                                266d
+local-pv-d29e232e                          5Gi        RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-6cv2r2    odflvsc                                228d
+local-pv-df186a6d                          20Gi       RWO            Delete           Available                                                            odflvsc                                20m
+local-pv-f152ce16                          10Gi       RWO            Delete           Bound       openshift-storage/ocs-deviceset-odflvsc-0-data-2297q88   odflvsc                                99d
+pvc-135a0980-13f5-422c-9f3a-b3e88ef71fc8   100Gi      RWO            Delete           Bound       rhacs-operator/central-db                                ocs-storagecluster-ceph-rbd            260d
+pvc-1ada0567-dec1-4f48-8812-22a51a5c6fd8   50Gi       RWO            Delete           Bound       quay-enterprise/example-registry-quay-postgres-13        ocs-storagecluster-ceph-rbd            165d
+pvc-5958061e-8f68-467b-b415-398138c3c68e   50Gi       RWO            Delete           Bound       quay-enterprise/example-registry-clair-postgres-13       ocs-storagecluster-ceph-rbd            165d
+pvc-9d56daac-f05a-4c70-965b-d3ed0d218d61   100Gi      RWX            Delete           Bound       openshift-image-registry/registry-storage-pvc            ocs-storagecluster-cephfs              238d
+pvc-9fa0a0d2-9976-47c6-9277-01e2dd05cedc   20Gi       RWX            Delete           Bound       test1/cephfs-pvc                                         ocs-storagecluster-cephfs              143d
+pvc-b2f10ed4-c1bf-409f-b0d2-1f6cd816221c   1Gi        RWO            Delete           Bound       test-oadp/test-pvc                                       ocs-storagecluster-ceph-rbd            63d
+pvc-d3e05709-4ad7-4bba-af1d-e276f453b8e2   20Gi       RWO            Delete           Bound       test1/rbd-pvc                                            ocs-storagecluster-ceph-rbd            143d
+pvc-d97c01f4-4bf5-4b62-a0fd-d7f9d2bb9678   50Gi       RWO            Delete           Bound       openshift-storage/db-noobaa-db-pg-0                      ocs-storagecluster-ceph-rbd            266d
+pvc-e7e6f9d2-7c9f-4b10-ba06-5e63f37b9b88   100Gi      RWO            Delete           Bound       stackrox/central-db                                      ocs-storagecluster-ceph-rbd            260d
+
+
+위에서  available로 잡힌 디바이스는 세개..
+
+[root@worker02 by-id]# ls -al |grep 19e1
+lrwxrwxrwx. 1 root root   9 Jun 27 09:50 scsi-36000c299de31047d1153572f4ced19e1 -> ../../sdf
+lrwxrwxrwx. 1 root root   9 Jun 27 09:50 scsi-SVMware_Virtual_disk_6000c299de31047d1153572f4ced19e1 -> ../../sdf
+lrwxrwxrwx. 1 root root   9 Jun 27 09:50 wwn-0x6000c299de31047d1153572f4ced19e1 -> ../../sdf
+[root@worker02 by-id]# ls -al |grep b01771db
+lrwxrwxrwx. 1 root root   9 Jun 27 09:49 scsi-36000c29bd8a25072c89d4900b01771db -> ../../sdc
+lrwxrwxrwx. 1 root root   9 Jun 27 09:49 scsi-SVMware_Virtual_disk_6000c29bd8a25072c89d4900b01771db -> ../../sdc
+lrwxrwxrwx. 1 root root   9 Jun 27 09:49 wwn-0x6000c29bd8a25072c89d4900b01771db -> ../../sdc
+[root@worker02 by-id]# ls -al 18b06d41277627^C
+[root@worker02 by-id]# ls -al |grep 18b06d41277627
+lrwxrwxrwx. 1 root root   9 Jun 27 09:48 scsi-36000c29733af1dcc7418b06d41277627 -> ../../sde
+lrwxrwxrwx. 1 root root   9 Jun 27 09:48 scsi-SVMware_Virtual_disk_6000c29733af1dcc7418b06d41277627 -> ../../sde
+lrwxrwxrwx. 1 root root   9 Jun 27 09:48 wwn-0x6000c29733af1dcc7418b06d41277627 -> ../../sde
+
+
+// sdb,sdd는 available로 잡히지 않아서 worker02에서 아래 내용 수행해주고,,,
+      sh#> sgdisk --zap-all /dev/sdX   
+      sh#> wipefs -fa /dev/sdX
+
+// 일단 Scale up operators
+
+  # oc scale deployment rook-ceph-operator --replicas=1
+  deployment.apps/rook-ceph-operator scaled
+  # oc scale deployment ocs-operator --replicas=1
+  deployment.apps/ocs-operator scaled
+
+
+
+// 오!! 드디어
+
+
+[root@bastion ~]# oc get pod -o wide |grep -i worker02
+csi-cephfsplugin-bbctb                                            2/2     Running                 6                   16d    10.184.134.80   worker02.ocp4.example.com   <none>           <none>
+csi-rbdplugin-nc6g7                                               3/3     Running                 9                   16d    10.184.134.80   worker02.ocp4.example.com   <none>           <none>
+ocs-operator-dc967b5c9-c7j4p                                      1/1     Running                 0                   70s    10.131.0.104    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-crashcollector-worker02.ocp4.example.com-84c858bl6zfs   1/1     Running                 0                   121m   10.131.0.19     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-exporter-worker02.ocp4.example.com-8487b6cbf-5d7g8      1/1     Running                 0                   121m   10.131.0.20     worker02.ocp4.example.com   <none>           <none>
+rook-ceph-mon-a-668494f5f5-s24cm                                  2/2     Running                 0                   132m   10.131.0.6      worker02.ocp4.example.com   <none>           <none>
+rook-ceph-operator-6c4dd69678-n7d5n                               1/1     Running                 0                   78s    10.131.0.100    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-11-5c7bbb45d4-nxmcc                                 2/2     Running                 0                   24s    10.131.0.115    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-13-58458fb84c-8q54q                                 0/2     Init:CrashLoopBackOff   1 (8s ago)          14s    10.131.0.118    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-17-59bc8c4fc5-6qwtx                                 2/2     Running                 0                   21s    10.131.0.116    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-18-f8745d894-snmg7                                  1/2     Running                 0                   20s    10.131.0.117    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-7-5b999b497d-9b6s7                                  2/2     Running                 0                   25s    10.131.0.114    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-3e1e8fa1a2523d6f4f5fc9c539040324-mrzwd      0/1     Completed               0                   33s    10.131.0.111    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-3e3d8dd5268f9505c3ce01b74c876c3f-46v2j      0/1     Completed               0                   37s    10.131.0.109    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-3e82e7403537bee24aaf5c4d9c64add2-c9vzd      0/1     Completed               0                   41s    10.131.0.108    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-43a4af3b7fc9948e383f3fefe4fc9d5d-k752n      0/1     Completed               0                   33s    10.131.0.110    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-79c84cbf2d38712ef3303bdc4bde03b3-2z56s      0/1     Completed               0                   31s    10.131.0.113    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-bb8e2ed694cca2141848865901444489-dfpjc      0/1     Completed               0                   41s    10.131.0.107    worker02.ocp4.example.com   <none>           <none>
+rook-ceph-osd-prepare-d7dc7cfb4db2b1208a64414748f72d6c-jf58s      0/1     Completed               0                   32s    10.131.0.112    worker02.ocp4.example.com   <none>           <none>
+
+
+
+
+
